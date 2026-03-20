@@ -32,14 +32,13 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
-
+# Allow all origins — tighten after confirming it works
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept"],
+    allow_headers=["*"],
     max_age=600,
 )
 
@@ -58,13 +57,12 @@ async def security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"]        = "geolocation=(), microphone=(), camera=()"
     response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
     response.headers["Cache-Control"]             = "no-store"
-    response.headers.__delitem__("server") if "server" in response.headers else None
-    logger.info(f"{request.method} {request.url.path} → {response.status_code} ({duration}ms)")
+    logger.info(f"{request.method} {request.url.path} -> {response.status_code} ({duration}ms)")
     return response
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
-    errors = [{"field": " → ".join(str(x) for x in e["loc"]), "message": e["msg"]} for e in exc.errors()]
+    errors = [{"field": " -> ".join(str(x) for x in e["loc"]), "message": e["msg"]} for e in exc.errors()]
     return JSONResponse(status_code=422, content={"detail": "Validation failed", "errors": errors})
 
 @app.exception_handler(Exception)
