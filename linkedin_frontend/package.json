@@ -1,0 +1,30 @@
+{
+  "name": "linkedin-ai-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.22.0",
+    "three": "^0.162.0",
+    "@react-three/fiber": "^8.15.0",
+    "@react-three/drei": "^9.99.0",
+    "framer-motion": "^11.0.0",
+    "gsap": "^3.12.5",
+    "axios": "^1.6.7",
+    "react-markdown": "^9.0.1",
+    "lucide-react": "^0.344.0",
+    "react-hot-toast": "^2.4.1",
+    "react-dropzone": "^14.2.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.1.4"
+  }
+}
