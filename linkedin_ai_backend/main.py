@@ -1,88 +1,89 @@
-from fastapi import FastAPI
+import logging
+import time
+import os
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from slowapi import Limiter
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from fastapi.responses import JSONResponse
+from slowapi.middleware import SlowAPIMiddleware
 from database import engine, Base
 from routers import auth, profile, chat
+from dotenv import load_dotenv
 
-# Create all DB tables on startup
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+logger = logging.getLogger("linkedai")
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="LinkedIn AI Profile Analyzer",
-    description="Upload your LinkedIn PDF, get AI-powered analysis, and improve your profile via chat.",
-    version="1.0.0",
+    version="2.0.0",
+    docs_url="/docs" if os.getenv("ENV", "development") != "production" else None,
+    redoc_url=None,
 )
 
-# Rate limiting
-limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
-@app.exception_handler(RateLimitExceeded)
-async def rate_limit_handler(request, exc):
-    return JSONResponse(
-        status_code=429,
-        content={"detail": "Too many requests. Please try again later."}
-    )
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 
-# Security headers middleware
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'"
-        return response
-
-# Request size limit middleware (10 MB)
-class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, max_size: int = 10 * 1024 * 1024):  # 10 MB
-        super().__init__(app)
-        self.max_size = max_size
-    
-    async def dispatch(self, request, call_next):
-        if request.headers.get("content-length"):
-            content_length = int(request.headers["content-length"])
-            if content_length > self.max_size:
-                return JSONResponse(
-                    status_code=413,
-                    content={"detail": "Request too large. Maximum 10 MB allowed."}
-                )
-        return await call_next(request)
-
-app.add_middleware(RequestSizeLimitMiddleware)
-app.add_middleware(SecurityHeadersMiddleware)
-
-# CORS — adjust origins in production to your actual frontend URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
+    max_age=600,
 )
 
-# Register routers
-app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
-app.include_router(profile.router, prefix="/profile", tags=["Profile"])
-app.include_router(chat.router, prefix="/chat", tags=["Chat"])
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > 10 * 1024 * 1024:
+        return JSONResponse(status_code=413, content={"detail": "Request too large. Max 10MB."})
+    start = time.time()
+    response = await call_next(request)
+    duration = round((time.time() - start) * 1000, 2)
+    response.headers["X-Content-Type-Options"]    = "nosniff"
+    response.headers["X-Frame-Options"]           = "DENY"
+    response.headers["X-XSS-Protection"]          = "1; mode=block"
+    response.headers["Referrer-Policy"]           = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"]        = "geolocation=(), microphone=(), camera=()"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    response.headers["Cache-Control"]             = "no-store"
+    response.headers.__delitem__("server") if "server" in response.headers else None
+    logger.info(f"{request.method} {request.url.path} → {response.status_code} ({duration}ms)")
+    return response
 
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    errors = [{"field": " → ".join(str(x) for x in e["loc"]), "message": e["msg"]} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": "Validation failed", "errors": errors})
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
+
+app.include_router(auth.router,    prefix="/auth",    tags=["Authentication"])
+app.include_router(profile.router, prefix="/profile", tags=["Profile"])
+app.include_router(chat.router,    prefix="/chat",    tags=["Chat"])
 
 @app.get("/", tags=["Health"])
 def root():
-    return {
-        "status": "running",
-        "message": "LinkedIn AI Analyzer API is live.",
-        "docs": "/docs",
-    }
-
+    return {"status": "running", "version": "2.0.0"}
 
 @app.get("/health", tags=["Health"])
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "timestamp": time.time()}
+
+@app.get("/ping", tags=["Health"])
+def ping():
+    return {"pong": True}
