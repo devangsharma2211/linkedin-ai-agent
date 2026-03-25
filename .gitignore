@@ -15,3 +15,4 @@ dist/
 # IDE
 .vscode/settings.json
 .idea/
+.env
